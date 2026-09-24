@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AMR Coordination Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #0f172a; color: #f8fafc; overflow: hidden; }
+        .log-font { font-family: 'JetBrains Mono', monospace; }
+        
+        /* Custom scrollbar for logs */
+        ::-webkit-scrollbar { width: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+        .metric-card {
+            background: linear-gradient(145deg, #1e293b, #0f172a);
+            border: 1px solid #334155;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+        
+        canvas {
+            image-rendering: -moz-crisp-edges;
+            image-rendering: -webkit-optimize-contrast;
+            image-rendering: crisp-edges;
+            image-rendering: pixelated;
+        }
+
+        .pulse-red { animation: pulseRed 2s infinite; }
+        @keyframes pulseRed {
+            0% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(239, 68, 68, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0); }
+        }
+    </style>
+</head>
+<body class="h-screen w-screen flex flex-col text-slate-200">
+
+    <header class="h-20 border-b border-slate-700 bg-slate-800/50 backdrop-blur-sm flex items-center justify-between px-6 shrink-0 z-10 relative">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded bg-blue-500 flex items-center justify-center font-bold text-white shadow-lg shadow-blue-500/30">Z</div>
+            <h1 class="text-xl font-bold tracking-tight text-white"> AMR Fleet <span class="text-blue-400">Orchestrator</span></h1>
+        </div>
+
+        <div class="flex items-center gap-4">
+            <!-- Metrics -->
+            <div class="flex gap-4 mr-6">
+                <div class="metric-card rounded-lg px-4 py-2 min-w-[120px]">
+                    <div class="text-xs text-slate-400 font-medium uppercase tracking-wider">Tasks Done</div>
+                    <div class="text-xl font-semibold text-emerald-400" id="metric-tasks">142</div>
+                </div>
+                <div class="metric-card rounded-lg px-4 py-2 min-w-[120px]">
+                    <div class="text-xs text-slate-400 font-medium uppercase tracking-wider">Avg Wait</div>
+                    <div class="text-xl font-semibold text-blue-400" id="metric-wait">1.2s</div>
+                </div>
+                <div class="metric-card rounded-lg px-4 py-2 min-w-[120px]">
+                    <div class="text-xs text-slate-400 font-medium uppercase tracking-wider">Deadlocks</div>
+                    <div class="text-xl font-semibold text-slate-200" id="metric-deadlocks">0</div>
+                </div>
+            </div>
+
+            <!-- Controls -->
+            <button id="btn-spawn" class="bg-slate-700 hover:bg-slate-600 text-white px-4 py-2 rounded-md font-medium transition-colors border border-slate-600 shadow-sm flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4" /></svg>
+                Spawn AMR
+            </button>
+            <button id="btn-network" class="bg-emerald-600/20 text-emerald-400 border border-emerald-500/50 hover:bg-emerald-600/30 px-4 py-2 rounded-md font-medium transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] flex items-center gap-2">
+                <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block indicator-dot"></span>
+                <span id="network-text">Network: LIVE</span>
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 flex overflow-hidden bg-slate-900 relative">
+        
+        <!-- Canvas Container (Left/Center) -->
+        <div id="canvas-container" class="flex-1 relative border-r border-slate-700">
+            <!-- Overlay UI for Map -->
+            <div class="absolute top-4 left-4 flex gap-3 z-10 pointer-events-none">
+                <div class="bg-slate-800/80 backdrop-blur rounded px-3 py-1.5 text-xs font-medium border border-slate-700 flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-blue-400"></span> Active Node
+                </div>
+                <div class="bg-slate-800/80 backdrop-blur rounded px-3 py-1.5 text-xs font-medium border border-slate-700 flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-orange-400"></span> Negotiating
+                </div>
+                <div class="bg-slate-800/80 backdrop-blur rounded px-3 py-1.5 text-xs font-medium border border-slate-700 flex items-center gap-2">
+                    <span class="w-2 h-2 rounded-full bg-slate-500"></span> Shelf
+                </div>
+            </div>
+            
+            <canvas id="warehouse-map" class="w-full h-full block"></canvas>
+            
+            <!-- Network down overlay -->
+            <div id="network-overlay" class="absolute inset-0 bg-red-900/10 pointer-events-none hidden flex items-center justify-center">
+                <div class="bg-slate-900/80 text-red-400 border border-red-500/50 px-6 py-3 rounded-lg backdrop-blur-md shadow-2xl flex items-center gap-3">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg>
+                    <span class="font-semibold tracking-wide">BROKER OFFLINE: EDGE FAIL-SAFE ENGAGED</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Event Log Sidebar (Right) -->
+        <aside class="w-96 flex flex-col bg-slate-900 shrink-0 shadow-[-10px_0_20px_rgba(0,0,0,0.2)] z-10 relative">
+            <div class="px-4 py-3 border-b border-slate-800 bg-slate-800/50 flex justify-between items-center">
+                <h2 class="text-sm font-semibold text-slate-300 uppercase tracking-wider">Live P2P Mesh Feed</h2>
+                <div class="flex items-center gap-1">
+                    <div class="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></div>
+                    <span class="text-[10px] text-slate-500">Listening to agents</span>
+                </div>
+            </div>
+            <div id="log-container" class="flex-1 overflow-y-auto p-4 space-y-2 text-sm log-font bg-[#0a0f1c]">
+                <!-- Logs injected here -->
+            </div>
+        </aside>
+    </main>
+
+    <script>
+        /**
+         * State & Configuration
+         */
+        const config = {
+            gridCols: 30,
+            gridRows: 20,
+            robotSpeed: 2.5, // units per second
+            robotRadiusRatio: 0.35, // relative to cell size
+        };
+
+        const state = {
+            networkActive: true,
+            robots: [],
+            grid: [], // 0 = empty, 1 = obstacle
+            tasksCompleted: 142,
+            deadlocksAvoided: 0,
+            nextRobotId: 1
+        };
+
+        // DOM Elements
+        const canvas = document.getElementById('warehouse-map');
+        const ctx = canvas.getContext('2d');
+        const logContainer = document.getElementById('log-container');
+        const metricTasks = document.getElementById('metric-tasks');
+        const metricDeadlocks = document.getElementById('metric-deadlocks');
+        const btnNetwork = document.getElementById('btn-network');
+        const btnSpawn = document.getElementById('btn-spawn');
+        const networkText = document.getElementById('network-text');
+        const networkOverlay = document.getElementById('network-overlay');
+
+        /**
+         * Warehouse Layout Generation
+         */
+        function initGrid() {
+            state.grid = Array(config.gridRows).fill().map(() => Array(config.gridCols).fill(0));
+            
+            // Create shelf blocks (aisles)
+            for (let r = 2; r < config.gridRows - 2; r += 4) {
+                for (let c = 3; c < config.gridCols - 3; c += 1) {
+                    // Leave vertical gaps for cross-aisles
+                    if (c % 8 !== 0 && c % 8 !== 1 && c % 8 !== 7) {
+                        state.grid[r][c] = 1;
+                        state.grid[r+1][c] = 1;
+                    }
+                }
+            }
+        }
+
+        function getEmptyCell() {
+            let r, c;
+            do {
+                r = Math.floor(Math.random() * config.gridRows);
+                c = Math.floor(Math.random() * config.gridCols);
+            } while (state.grid[r][c] === 1);
+            return {r, c};
+        }
+
+        /**
+         * Lightweight Breadth-First Search for Grid Pathfinding
+         */
+        function findPath(startR, startC, targetR, targetC) {
+            if (startR === targetR && startC === targetC) return [];
+            
+            const queue = [{r: startR, c: startC, path: []}];
+            const visited = new Set([`${startR},${startC}`]);
+            const dirs = [[-1,0], [1,0], [0,-1], [0,1]]; // Up, Down, Left, Right
+
+            while (queue.length > 0) {
+                const current = queue.shift();
+
+                if (current.r === targetR && current.c === targetC) {
+                    return current.path;
+                }
+
+                for (const [dr, dc] of dirs) {
+                    const nr = current.r + dr;
+                    const nc = current.c + dc;
+                    const key = `${nr},${nc}`;
+
+                    if (nr >= 0 && nr < config.gridRows && nc >= 0 && nc < config.gridCols) {
+                        if (state.grid[nr][nc] === 0 && !visited.has(key)) {
+                            visited.add(key);
+                            queue.push({
+                                r: nr, c: nc, 
+                                path: [...current.path, {r: nr, c: nc}]
+                            });
+                        }
+                    }
+                }
+            }
+            return []; // No path found
+        }
+
+        class Robot {
+            constructor(id, r, c) {
+                this.id = id;
+                this.r = r;
+                this.c = c;
+                this.px = c; // visual fractional position
+                this.py = r;
+                this.path = [];
+                this.targetCell = null;
+                this.originalPath = [];
+                this.originalTargetCell = null;
+                this.state = 'idle'; // idle, moving, negotiating, yielding
+                this.color = '#3b82f6'; // blue-500
+                this.lastConflictAt = 0;
+                this.yieldUntil = 0;
+                this.assignNewTask();
+            }
+
+            saveCurrentRoute() {
+                this.originalPath = this.path.slice();
+                this.originalTargetCell = this.targetCell ? { ...this.targetCell } : null;
+            }
+
+            assignNewTask() {
+                const target = getEmptyCell();
+                const path = findPath(Math.round(this.py), Math.round(this.px), target.r, target.c);
+                if (path.length > 0) {
+                    const nextCell = path.shift();
+                    this.path = path;
+                    this.targetCell = nextCell;
+                    this.originalPath = path.slice();
+                    this.originalTargetCell = nextCell ? { ...nextCell } : null;
+                    this.state = 'moving';
+                    this.color = '#3b82f6'; 
+                } else {
+                    this.state = 'idle';
+                    this.path = [];
+                    this.targetCell = null;
+                }
+            }
+
+            update(dt) {
+                if (this.state === 'negotiating' || this.state === 'yielding') {
+                    if (this.state === 'yielding' && performance.now() >= this.yieldUntil) {
+                        this.state = 'moving';
+                        this.color = '#3b82f6';
+                    } else {
+                        return;
+                    }
+                }
+
+                if (this.targetCell) {
+                    const dx = this.targetCell.c - this.px;
+                    const dy = this.targetCell.r - this.py;
+                    const dist = Math.hypot(dx, dy);
+
+                    // Network down = slow conservative movement to simulate local sensors only
+                    const currentSpeed = state.networkActive ? config.robotSpeed : (config.robotSpeed * 0.4);
+                    const moveAmt = currentSpeed * dt;
+
+                    if (dist <= moveAmt) {
+                        // Reached cell
+                        this.px = this.targetCell.c;
+                        this.py = this.targetCell.r;
+                        this.r = this.targetCell.r;
+                        this.c = this.targetCell.c;
+
+                        if (this.path.length > 0) {
+                            this.targetCell = this.path.shift();
+                        } else {
+                            this.targetCell = null;
+                            this.state = 'idle';
+                            state.tasksCompleted++;
+                            metricTasks.innerText = state.tasksCompleted;
+                            this.assignNewTask();
+                        }
+                    } else {
+                        // Move towards cell
+                        this.px += (dx / dist) * moveAmt;
+                        this.py += (dy / dist) * moveAmt;
+                    }
+                } else if (this.state === 'idle') {
+                    this.assignNewTask();
+                }
+            }
+        }
+
+        function addLog(message, type = 'info') {
+            const now = new Date();
+            const timeStr = `${now.getHours().toString().padStart(2, '0')}:${now.getMinutes().toString().padStart(2, '0')}:${now.getSeconds().toString().padStart(2, '0')}.${Math.floor(now.getMilliseconds()/100).toString()}`;
+            
+            const el = document.createElement('div');
+            el.className = 'border-l-2 pl-3 py-1 fade-in';
+            
+            let colorClass = 'text-slate-400 border-slate-700';
+            let prefix = '[INFO]';
+            
+            if (type === 'conflict') {
+                colorClass = 'text-orange-400 border-orange-500/50 bg-orange-500/5';
+                prefix = '[NEGOTIATE]';
+            } else if (type === 'network') {
+                colorClass = 'text-red-400 border-red-500/50 bg-red-500/5';
+                prefix = '[SYS_ALERT]';
+            } else if (type === 'success') {
+                colorClass = 'text-emerald-400 border-emerald-500/50';
+                prefix = '[RESOLVED]';
+            }
+
+            el.innerHTML = `
+                <span class="text-slate-500 text-xs">${timeStr}</span><br>
+                <span class="${colorClass} text-xs font-semibold">${prefix}</span> 
+                <span class="text-slate-300">${message}</span>
+            `;
+            
+            logContainer.appendChild(el);
+            
+            // Keep only last 50 logs
+            if (logContainer.children.length > 50) {
+                logContainer.removeChild(logContainer.firstChild);
+            }
+            
+            logContainer.scrollTop = logContainer.scrollHeight;
+        }
+
+        function rerouteRobot(robot, other, winner) {
+            if (robot.state === 'negotiating' || robot.state === 'yielding') return;
+
+            robot.saveCurrentRoute();
+            robot.state = 'yielding';
+            robot.color = '#fb923c';
+            robot.yieldUntil = performance.now() + 700;
+
+            addLog(`P2P Handshake: R${robot.id} and R${other.id} near same aisle. R${winner.id} keeps priority; local yield applied.`, 'conflict');
+
+            setTimeout(() => {
+                if (robot.state !== 'yielding') return;
+
+                robot.state = 'moving';
+                robot.color = '#3b82f6';
+                robot.yieldUntil = 0;
+
+                if (robot.originalTargetCell) {
+                    robot.targetCell = { ...robot.originalTargetCell };
+                } else if (robot.originalPath.length > 0) {
+                    robot.targetCell = robot.originalPath[0] ? { ...robot.originalPath[0] } : null;
+                } else {
+                    robot.targetCell = null;
+                }
+
+                addLog(`R${robot.id} resumed its original route without changing destination.`, 'success');
+                state.deadlocksAvoided++;
+                metricDeadlocks.innerText = state.deadlocksAvoided;
+            }, 700);
+        }
+
+        function simulateConflicts() {
+            // Check distances between robots to fake peer-to-peer negotiation
+            for (let i = 0; i < state.robots.length; i++) {
+                for (let j = i + 1; j < state.robots.length; j++) {
+                    const r1 = state.robots[i];
+                    const r2 = state.robots[j];
+
+                    if (r1.state === 'negotiating' || r2.state === 'negotiating' || r1.state === 'yielding' || r2.state === 'yielding') {
+                        continue;
+                    }
+
+                    const dist = Math.hypot(r1.px - r2.px, r1.py - r2.py);
+
+                    if (dist < 1.3 && r1.state === 'moving' && r2.state === 'moving') {
+                        const winner = (Math.random() > 0.5) ? r1 : r2;
+                        const loser = winner === r1 ? r2 : r1;
+                        const timeSinceLast = performance.now() - Math.min(r1.lastConflictAt, r2.lastConflictAt);
+
+                        if (timeSinceLast > 2000 || Math.min(r1.lastConflictAt, r2.lastConflictAt) === 0) {
+                            r1.lastConflictAt = performance.now();
+                            r2.lastConflictAt = performance.now();
+
+                            if (winner === r1) {
+                                rerouteRobot(r2, r1, winner);
+                            } else {
+                                rerouteRobot(r1, r2, winner);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        function resizeCanvas() {
+            const container = document.getElementById('canvas-container');
+            canvas.width = container.clientWidth;
+            canvas.height = container.clientHeight;
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            const cellW = canvas.width / config.gridCols;
+            const cellH = canvas.height / config.gridRows;
+
+            // 1. Draw Grid Lines (Subtle)
+            ctx.strokeStyle = '#1e293b';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let c = 0; c <= config.gridCols; c++) {
+                ctx.moveTo(c * cellW, 0);
+                ctx.lineTo(c * cellW, canvas.height);
+            }
+            for (let r = 0; r <= config.gridRows; r++) {
+                ctx.moveTo(0, r * cellH);
+                ctx.lineTo(canvas.width, r * cellH);
+            }
+            ctx.stroke();
+
+            // 2. Draw Obstacles (Shelves)
+            ctx.fillStyle = '#334155';
+            for (let r = 0; r < config.gridRows; r++) {
+                for (let c = 0; c < config.gridCols; c++) {
+                    if (state.grid[r][c] === 1) {
+                        // Draw block with a slight inner margin to look like a warehouse rack
+                        ctx.fillRect(c * cellW + 2, r * cellH + 2, cellW - 4, cellH - 4);
+                        // Add top highlight for depth
+                        ctx.fillStyle = '#475569';
+                        ctx.fillRect(c * cellW + 2, r * cellH + 2, cellW - 4, 4);
+                        ctx.fillStyle = '#334155';
+                    }
+                }
+            }
+
+            // 3. Draw Robots
+            const radius = Math.min(cellW, cellH) * config.robotRadiusRatio;
+            
+            state.robots.forEach(robot => {
+                const x = robot.px * cellW + (cellW / 2);
+                const y = robot.py * cellH + (cellH / 2);
+
+                // Draw intent path if active
+                if (robot.path.length > 0 && state.networkActive) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, y);
+                    if(robot.targetCell) {
+                        ctx.lineTo(robot.targetCell.c * cellW + cellW/2, robot.targetCell.r * cellH + cellH/2);
+                    }
+                    ctx.strokeStyle = `${robot.color}40`; // transparent version of color
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([4, 4]);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                }
+
+                // Draw robot body
+                ctx.beginPath();
+                ctx.arc(x, y, radius, 0, Math.PI * 2);
+                ctx.fillStyle = robot.color;
+                ctx.fill();
+                
+                // Glow effect based on state
+                ctx.shadowBlur = robot.state === 'negotiating' ? 15 : 5;
+                ctx.shadowColor = robot.color;
+                
+                // Inner center dot
+                ctx.beginPath();
+                ctx.arc(x, y, radius * 0.4, 0, Math.PI * 2);
+                ctx.fillStyle = '#ffffff';
+                ctx.shadowBlur = 0;
+                ctx.fill();
+
+                // ID text
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '9px JetBrains Mono';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(`R${robot.id}`, x, y - radius - 6);
+            });
+        }
+
+        let lastTime = 0;
+        function loop(timestamp) {
+            const dt = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            if (dt < 0.1) { // cap delta time to avoid large jumps
+                state.robots.forEach(r => r.update(dt));
+                simulateConflicts();
+            }
+            
+            draw();
+            requestAnimationFrame(loop);
+        }
+
+        // Controls Setup
+        btnSpawn.addEventListener('click', () => {
+            if (state.robots.length >= 20) {
+                addLog('Cannot spawn: Fleet max capacity reached.', 'network');
+                return;
+            }
+            const cell = getEmptyCell();
+            const robot = new Robot(state.nextRobotId++, cell.r, cell.c);
+            state.robots.push(robot);
+            addLog(`Agent R${robot.id} provisioned and connected to mesh.`, 'info');
+        });
+
+        btnNetwork.addEventListener('click', () => {
+            state.networkActive = !state.networkActive;
+            const dot = btnNetwork.querySelector('.indicator-dot');
+            
+            if (state.networkActive) {
+                // Restore Network
+                btnNetwork.className = 'bg-emerald-600/20 text-emerald-400 border border-emerald-500/50 hover:bg-emerald-600/30 px-4 py-2 rounded-md font-medium transition-all shadow-[0_0_15px_rgba(16,185,129,0.2)] flex items-center gap-2';
+                dot.className = 'w-2 h-2 rounded-full bg-emerald-400 inline-block indicator-dot';
+                networkText.innerText = 'Network: LIVE';
+                networkOverlay.classList.add('hidden');
+                btnNetwork.classList.remove('pulse-red');
+                addLog('Central broker RESTORED. Resuming global telemetry.', 'success');
+            } else {
+                // Kill Network
+                btnNetwork.className = 'bg-red-900/30 text-red-400 border border-red-500/50 hover:bg-red-900/50 px-4 py-2 rounded-md font-medium transition-all pulse-red flex items-center gap-2';
+                dot.className = 'w-2 h-2 rounded-full bg-red-500 inline-block indicator-dot';
+                networkText.innerText = 'Network: OFFLINE';
+                networkOverlay.classList.remove('hidden');
+                
+                addLog('CRITICAL: Central broker connection lost! Orchestrator offline.', 'network');
+                addLog('All AMRs falling back to decentralized P2P ad-hoc mesh. Enforcing local conservation rules.', 'network');
+                
+                // Randomly disrupt paths slightly to show reaction
+                state.robots.forEach(r => {
+                    if(Math.random() > 0.5 && r.state === 'moving') {
+                        r.state = 'negotiating';
+                        r.color = '#fb923c';
+                        setTimeout(() => { 
+                            r.state = 'moving'; 
+                            r.color = '#3b82f6'; 
+                        }, 2000);
+                    }
+                });
+            }
+        });
+
+        // Initialize App
+        window.onload = () => {
+            initGrid();
+            resizeCanvas();
+            
+            // Spawn initial robots
+            for(let i=0; i<8; i++) {
+                const cell = getEmptyCell();
+                state.robots.push(new Robot(state.nextRobotId++, cell.r, cell.c));
+            }
+            
+            addLog('Orchestrator initialized. Loading warehouse map...', 'info');
+            addLog('Broker active. 8 Edge nodes detected on MQTT pub/sub relay.', 'info');
+            
+            requestAnimationFrame(loop);
+        };
+    </script>
+</body>
+</html>
